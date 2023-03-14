@@ -1,0 +1,3 @@
+[submodule "Receiver/lib/xerxes-protocol-cpp"]
+	path = Receiver/lib/xerxes-protocol-cpp
+	url = git@github.com:metrotech-sk/xerxes-protocol-cpp.git

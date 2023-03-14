@@ -18,6 +18,7 @@
 #define SS      18   // GPIO18 -- SX1278's CS
 #define RST     14   // GPIO14 -- SX1278's RESET
 #define DI0     26   // GPIO26 -- SX1278's IRQ(Interrupt Request)
+#define LED     25   // GPIO25 -- LED
 #define BAND    868E6
 
 constexpr uint8_t _pin_tx = 13;
@@ -56,14 +57,14 @@ std::vector<uint8_t> receive(int packetSize) {
 
     display.clear();
     display.setTextAlignment(TEXT_ALIGN_LEFT);
-    display.setFont(ArialMT_Plain_10);
+    display.setFont(ArialMT_Plain_24);
     std::stringstream ss;
-    ss << "RSSI " << rssi << "dBm";
+    ss << "S: " << rssi << "dB";
     display.drawString(0, 0, ss.str().c_str());
-    ss = std::stringstream();
-    ss << "Rcvd: " << packetSize << " bytes";
-    display.drawString(0, 12, ss.str().c_str());
-    display.drawStringMaxWidth(0 , 24 , 128, pkt.c_str());
+    //ss = std::stringstream();
+    //ss << "Rcvd: " << packetSize << " bytes";
+    //display.drawString(0, 12, ss.str().c_str());
+    //display.drawStringMaxWidth(0 , 24 , 128, pkt.c_str());
     display.display();
     ESP_LOGD(TAG, "RSSI %d dBm.", rssi);
 
@@ -96,6 +97,7 @@ void initLora(LoRaClass &_LoRa)
 void setup() {
     Serial.begin(921600);
 
+    pinMode(LED, OUTPUT);
     pinMode(OLED_RST, OUTPUT);
     digitalWrite(OLED_RST, LOW);    // set GPIO16 low to reset OLED
     delay(50); 
@@ -132,10 +134,10 @@ void loop() {
         auto time_end = esp_timer_get_time();
         rcvd = 0;
         ESP_LOGD(TAG, "Sending packet to Xerxes done. Took %lld us.", time_end - time_start);
-    }
 
-    // wait for Serial to send data
-    Serial.flush(1);
-    sleep_ms(10);
+        // wait for Serial to send data
+        Serial.flush(1);
+    }
+    sleep_ms(1);  // 1ms = 21mA, 10ms = 17mA, 100ms = 15mA
     
 }

@@ -94,7 +94,7 @@ void initLora(LoRaClass &_LoRa)
 }
 
 void setup() {
-    Serial.begin(115200);
+    Serial.begin(921600);
 
     pinMode(OLED_RST, OUTPUT);
     digitalWrite(OLED_RST, LOW);    // set GPIO16 low to reset OLED
@@ -113,8 +113,7 @@ void setup() {
     gpio_wakeup_enable(static_cast<gpio_num_t>(LORA_IRQ), GPIO_INTR_HIGH_LEVEL);
     esp_sleep_enable_gpio_wakeup();
 
-    ESP_LOGD(TAG, "Setting wakeups done.");
-    ESP_LOGD(TAG, "Setup done.");
+    ESP_LOGD(TAG, "Setting wakeups done. Setup done.");
 }
 
 void sleep_ms(uint ms)
@@ -128,11 +127,15 @@ void loop() {
     {
         auto bytes = receive(rcvd);
         ESP_LOGD(TAG, "Sending packet to Xerxes.");
+        auto time_start = esp_timer_get_time();
         xp.sendMessage(Xerxes::Message(Xerxes::Packet(bytes)));
+        auto time_end = esp_timer_get_time();
         rcvd = 0;
+        ESP_LOGD(TAG, "Sending packet to Xerxes done. Took %lld us.", time_end - time_start);
     }
 
     // wait for Serial to send data
     Serial.flush(1);
     sleep_ms(10);
+    
 }

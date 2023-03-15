@@ -4,6 +4,7 @@
 #include "SSD1306.h" 
 #include "driver/uart.h"
 #include "esp_log.h"
+#include "esp_assert.h"
 
 #include "Master.hpp"
 #include "Protocol.hpp"
@@ -11,6 +12,8 @@
 #include <string>
 #include <sstream>
 #include <vector>
+#include "Version.h"
+#include "Leaf.hpp"
 
 #define SCK     5    // GPIO5  -- SX1278's SCK
 #define MISO    19   // GPIO19 -- SX1278's MISO
@@ -27,6 +30,8 @@ constexpr uint8_t _pin_tx_en = 2;
 
 auto xn = Xerxes::EspUart(_pin_tx, _pin_rx, _pin_tx_en);
 auto xp = Xerxes::Protocol(&xn);
+auto xm = Xerxes::Master(&xp, 0xFE, 10000);
+Xerxes::Leaf leaf;
 
 SSD1306 display(0x3c, 4, 15);
 String packSize = "--";
@@ -71,6 +76,19 @@ std::vector<uint8_t> receive(int packetSize) {
     return bytes;
 }
 
+
+void LoRa_rxMode(){
+    LoRa.disableInvertIQ();               // normal mode
+    LoRa.receive();                       // set receive mode
+}
+
+
+void onTxDone() {
+    digitalWrite(LED_BUILTIN, LOW);    // turn the LED off by making the voltage LOW
+    LoRa_rxMode();   
+    //LoRa.idle(); 
+}
+
 void initLora(LoRaClass &_LoRa)
 {
     ESP_LOGD(TAG, "LoRa Receiver init");
@@ -82,6 +100,7 @@ void initLora(LoRaClass &_LoRa)
     }
 
     _LoRa.onReceive(onRxInt);
+    _LoRa.onTxDone(onTxDone);
     _LoRa.disableInvertIQ(); 
     _LoRa.receive();    
     _LoRa.setSpreadingFactor(7); // spreading factor SF7
@@ -115,7 +134,31 @@ void setup() {
     gpio_wakeup_enable(static_cast<gpio_num_t>(LORA_IRQ), GPIO_INTR_HIGH_LEVEL);
     esp_sleep_enable_gpio_wakeup();
 
-    ESP_LOGD(TAG, "Setting wakeups done. Setup done.");
+    ESP_LOGD(TAG, "Setting wakeups done. Searching for sensor.");
+    
+    for(int addr = 0; addr < 0x20; addr++)
+    {
+        try
+        {
+            ping_reply_t rply = xm.ping(addr);
+            ESP_LOGI(TAG, "Found sensor at address 0x%02X.", addr);
+            assert(rply.v_major == PROTOCOL_VERSION_MAJ && rply.v_minor == PROTOCOL_VERSION_MIN);
+            leaf = Xerxes::Leaf(addr, &xm);
+            break;
+        }
+        catch(const Xerxes::TimeoutError& e)
+        {
+            ESP_LOGD(TAG, "No sensor found.");
+        }
+        catch(const std::exception& e)
+        {
+            ESP_LOGE(TAG, "Error: %s", e.what());
+        }
+        catch(...)
+        {
+            ESP_LOGE(TAG, "Unknown error.");
+        }
+    }
 }
 
 void sleep_ms(uint ms)
@@ -124,20 +167,76 @@ void sleep_ms(uint ms)
     esp_light_sleep_start();
 }
 
-void loop() {
+void handleMessage(const Xerxes::Message & _msg)
+{
+    bool got_reply = false;
+    ESP_LOGD(TAG, "DstAddr: %d", _msg.dstAddr);
+    ESP_LOGD(TAG, "Leaf addr: %d", leaf.getAddr());
+
+    if(_msg.dstAddr == leaf.getAddr() or _msg.dstAddr == BROADCAST_ADDRESS)
+    {
+        ESP_LOGD(TAG, "Forwarding packet to Xerxes leaf.");
+        xp.sendMessage(_msg);
+        
+        Xerxes::Message replyFromSensor;
+        got_reply = xp.readMessage(replyFromSensor, 10000);
+        
+        // mock reply
+        ESP_LOGW(TAG, "Mocking reply from sensor.");
+        got_reply = true;
+        replyFromSensor = Xerxes::Message(0, 0xFE, MSGID_PING_REPLY, std::vector<uint8_t>{1, 4, 1});
+
+        if(got_reply)
+        {
+            ESP_LOGI(TAG, "Got reply from sensor.");
+
+            auto pkt = replyFromSensor.toPacket();
+
+            ESP_LOGD(TAG, "Sending packet %s to gateway.", pkt.toString().c_str());
+            LoRa.beginPacket();
+            for(auto c:pkt.getData())
+            {
+                LoRa.write(c);
+            }
+            LoRa.endPacket(true);
+        }
+    }
+}
+
+void loop() 
+{
     if(rcvd)
     {
-        auto bytes = receive(rcvd);
-        ESP_LOGD(TAG, "Sending packet to Xerxes.");
+        auto bytes_vec = receive(rcvd);
         auto time_start = esp_timer_get_time();
-        xp.sendMessage(Xerxes::Message(Xerxes::Packet(bytes)));
+
+        auto packet = Xerxes::Packet::EmptyPacket();
+        packet.setData(bytes_vec);
+        if(packet.isValidPacket())
+        {
+            if(packetIsValidMessage(packet))
+            {
+                ESP_LOGD(TAG, "Got valid message.");
+                handleMessage(Xerxes::Message(packet));
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Got valid packet, but not a message.");
+            }
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Invalid packet received.");
+            rcvd = 0;
+        }
+        
         auto time_end = esp_timer_get_time();
+        ESP_LOGW(TAG, "Message handle done. Took %lld us.", time_end - time_start);
         rcvd = 0;
-        ESP_LOGD(TAG, "Sending packet to Xerxes done. Took %lld us.", time_end - time_start);
 
         // wait for Serial to send data
         Serial.flush(1);
     }
-    sleep_ms(1);  // 1ms = 21mA, 10ms = 17mA, 100ms = 15mA
+    sleep_ms(10);  // 1ms = 21mA, 10ms = 17mA, 100ms = 15mA
     
 }

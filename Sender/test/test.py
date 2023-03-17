@@ -45,8 +45,8 @@ class HS(DebugSerial):
 
 
 port = "/dev/ttyACM0"
-xn = XerxesNetwork(HS(port))
-xn.init(baudrate=921600, timeout=1)
+xn = XerxesNetwork(Serial(port))
+xn.init(baudrate=921600, timeout=.1)
 
 xr = XerxesRoot(0xFE, xn)
 xr.ping(0)

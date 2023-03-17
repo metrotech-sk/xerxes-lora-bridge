@@ -104,7 +104,7 @@ void initLora(LoRaClass &_LoRa)
     _LoRa.disableInvertIQ(); 
     _LoRa.receive();    
     _LoRa.setSpreadingFactor(7); // spreading factor SF7
-    _LoRa.setSignalBandwidth(125e3); // frequency bandwidth 125kHz
+    _LoRa.setSignalBandwidth(LORA_BW_KHZ*1000); // frequency bandwidth 125kHz
     _LoRa.setCodingRate4(5); // coding factor 4:5
 
     _LoRa.setTxPower(20);

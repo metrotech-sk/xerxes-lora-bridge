@@ -2,6 +2,7 @@
 #include <LoRa.h>
 #include <Wire.h>  
 #include "SSD1306.h"
+#include "esp_task_wdt.h"
 
 #include <iostream>
 #include <stdio.h>
@@ -14,13 +15,18 @@
 #include "MessageId.h"
 #include "Packet.hpp"
 
-constexpr double BAND = 868E6;
 
+constexpr double BAND = 868E6;
+#define PIN_LED 25
 
 SSD1306 display(0x3c, 4, 15);
 
 static uint32_t ctr = 0;
-static Xerxes::Packet rcvdPacket;
+static Xerxes::Packet rxPacket;
+static Xerxes::Packet txPacket;
+static bool serialReceived = false;
+static bool btnPressed = false;
+static bool receivedLora = false;
 
 constexpr char TAG[] = "main";
 
@@ -51,75 +57,81 @@ void LoRa_txMode()
 
 void onReceive(int packetSize) 
 {
-    digitalWrite(25, HIGH);
+    digitalWrite(PIN_LED, HIGH);
     std::vector<uint8_t> data;
 
     while (LoRa.available()) {
         uint8_t next = LoRa.read();
         data.push_back(next);
     }
-    rcvdPacket.setData(data);
-    digitalWrite(25, LOW);
+    rxPacket.setData(data);
+    digitalWrite(PIN_LED, LOW);
+    receivedLora = true;
+}
 
-    auto rcvdStr = rcvdPacket.toString();
-    if(rcvdPacket.isValidPacket())
+void handleReceivedPacket()
+{
+    if(rxPacket.isValidPacket())
     {
-        if(packetIsValidMessage(rcvdPacket))
+        if(packetIsValidMessage(rxPacket))
         {
-            ESP_LOGD(TAG, "Valid message received: %s", rcvdStr.c_str());
-            for(auto const & c: rcvdPacket.getData())
+            ESP_LOGD(TAG, "Valid message received: %s", rxPacket.toString().c_str());
+            for(auto const & c: rxPacket.getData())
             {
                 Serial.write(c);
             }
         }
         else
         {
-            ESP_LOGW(TAG, "Invalid message received: %s", rcvdStr.c_str());
+            ESP_LOGW(TAG, "Invalid message received: %s", rxPacket.toString().c_str());
         }
     }
     else
     {
-        ESP_LOGW(TAG, "Invalid packet received: %s", rcvdStr.c_str());
+        ESP_LOGW(TAG, "Invalid packet received: %s", rxPacket.toString().c_str());
     }
-
     Serial.flush(1);
 }
 
 void onTxDone() 
 {
-    digitalWrite(LED_BUILTIN, LOW);    // turn the LED off by making the voltage LOW
+    digitalWrite(PIN_LED, LOW);    // turn the LED off by making the voltage LOW
     LoRa_rxMode();  // go back to receive mode 
     //LoRa.idle(); 
 }
 
-void sendPacketOverLoRa(Xerxes::Packet & packet)
+
+void sendPacketOverLoRaUnsafe(Xerxes::Packet & packet, bool updateDisplay = true)
+{
+    if(updateDisplay)
+    {   
+        ESP_LOGD(TAG, "Updating display");
+        message(String("Sending packet: ") + String(ctr++), 0, 0, true); 
+    }
+
+    ESP_LOGD(TAG, "Enabling radio");
+    LoRa_txMode();
+    digitalWrite(PIN_LED, HIGH);   // turn the LED on (HIGH is the voltage level)
+    LoRa.beginPacket();
+    for(const auto & c : packet.getData())
+    {
+        LoRa.write(c);
+    }
+    LoRa.endPacket(true);
+    LoRa_rxMode();
+    ESP_LOGD(TAG, "Packet sent.");
+}
+
+
+void sendPacketOverLoRaSafe(Xerxes::Packet & packet)
 {
     if(packet.isValidPacket())
     {
         ESP_LOGD(TAG, "Valid packet received: %s", packet.toString().c_str());
         if(packetIsValidMessage(packet))
         {
-            display.clear();
-            message(String("Sending packet: ") + String(ctr++), 0, 0, false); 
             ESP_LOGD(TAG, "Packet is valid message. Sending over LoRa.");
-
-            // wait while LoRa is transmitting last message
-            while(!LoRa.beginPacket());
-
-            auto tx_start = esp_timer_get_time();
-            for(const auto & c : packet.getData())
-            {
-                LoRa.write(c);
-            }
-            LoRa.endPacket(true);
-
-            // sleep until tx is done
-            esp_light_sleep_start();
-            // awaken by rxDone event here
-            ESP_LOGD(TAG, "Packet sent in %d ms, current time: %lldms", (esp_timer_get_time() - tx_start)/1000, esp_timer_get_time()/1000);                
-            //after wake up from txDone evt:
-            message("Done!", 0, 32, false); 
-            Serial.flush(1);
+            sendPacketOverLoRaUnsafe(packet);
         }
         else
         {
@@ -132,19 +144,16 @@ void sendPacketOverLoRa(Xerxes::Packet & packet)
     }
 }
 
-bool send = false;
+
 void onBtnPressed() 
 {
-    ESP_LOGD(TAG, "Button pressed");    
-    
-    Xerxes::Packet packet = Xerxes::Message(0xFE, 0xFF, MSGID_SYNC).toPacket();
-    sendPacketOverLoRa(packet);
+    btnPressed = true;
 }
 
 
 void setup() {
     Serial.begin(921600);
-    Serial.setTimeout(30);  // set timeout for serial reading 30ms
+    Serial.setTimeout(1);  // set timeout for serial reading 1ms
     Serial.flush();
     
     ESP_LOGI(TAG, "CPU Frequency: %d MHz", getCpuFrequencyMhz());
@@ -174,14 +183,14 @@ void setup() {
     ESP_LOGD(TAG, "LoRa init");
 
     LoRa.setSpreadingFactor(7); // spreading factor SF7
-    LoRa.setSignalBandwidth(125e3); // frequency bandwidth 125kHz
+    LoRa.setSignalBandwidth(LORA_BW_KHZ * 1000); // frequency bandwidth 125kHz
     LoRa.setCodingRate4(5); // coding factor 4:5
     // this results in a -127.5 dBm sensitivity
     // and a 5.47 kbps data rate
 
     LoRa.setTxPower(20);
     LoRa.enableCrc();
-    ESP_LOGD(TAG, "LoRa config: SF7, BW125kHz, CR4/5, 20dBm, CRC, Freq: %f", BAND);
+    ESP_LOGD(TAG, "LoRa config: SF7, BW%dkHz, CR4/5, 20dBm, CRC, Freq: %f", LORA_BW_KHZ, BAND);
     
     LoRa.onReceive(onReceive);
     LoRa.onTxDone(onTxDone);
@@ -194,23 +203,33 @@ void setup() {
     
     ESP_LOGD(TAG, "Setup done");
     message("READY!", 0, 0, true);
-    Serial.flush(1);
 }
 
 
 void sleep_ms(uint32_t ms)
 {
-    esp_sleep_enable_timer_wakeup(ms * 1000);
+    auto timeNow = esp_timer_get_time();
+    Serial.flush();
+    auto restOfSleep = ms * 1000 - (esp_timer_get_time() - timeNow);
+    esp_sleep_enable_timer_wakeup(restOfSleep);
     esp_light_sleep_start();
 }
 
 
-Xerxes::Packet readPacketFromSerial()
+bool readPacketFromSerial(uint32_t timeoutUs = 5000)
 {
+    auto startUs = esp_timer_get_time();
+
     // start with SOH in buffer
     std::vector<uint8_t> rawMsg = {0x01};
     // wait for SOH in serial
-    while(Serial.read() != 0x01);
+    while(Serial.read() != 0x01)
+    {
+        if(esp_timer_get_time() - startUs > timeoutUs)
+        {
+            return false;
+        }
+    }
     ESP_LOGD(TAG, "SOH received");
     // read xerxes message from serial
     auto len = Serial.read();
@@ -219,14 +238,53 @@ Xerxes::Packet readPacketFromSerial()
     for(int i = 0; i < len - 2; i++)
     {
         rawMsg.push_back(Serial.read());
+        if(esp_timer_get_time() - startUs > timeoutUs)
+        {
+            return false;
+        }
     }
-    auto rcvd = Xerxes::Packet();
-    rcvd.setData(rawMsg);
-    return rcvd;
+
+    txPacket.setData(rawMsg);
+    return txPacket.isValidPacket();
 }
 
 
 void loop() {
-    Xerxes::Packet packet = readPacketFromSerial();
-    sendPacketOverLoRa(packet);    
+    
+    serialReceived = readPacketFromSerial();
+
+    if(btnPressed)
+    {
+        btnPressed = false;
+        ESP_LOGD(TAG, "Button pressed");    
+        Xerxes::Packet syncPacket = Xerxes::Message(0xFE, 0xFF, MSGID_SYNC).toPacket();
+        ESP_LOGD(TAG, "Sending packet: %s", syncPacket.toString().c_str());
+        sendPacketOverLoRaUnsafe(syncPacket);
+    }
+    
+    if(serialReceived)
+    {
+        serialReceived = false;
+        if(packetIsValidMessage(txPacket))
+        {
+            ESP_LOGD(TAG, "Valid message received from serial: %s", txPacket.toString().c_str());
+            sendPacketOverLoRaUnsafe(txPacket);
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Invalid message received from serial: %s", txPacket.toString().c_str());
+        }
+    }
+
+    if(receivedLora)
+    {
+        receivedLora = false;
+        handleReceivedPacket();
+        message("Reply from:", 0, 12, false);
+        if(rxPacket.isValidPacket() && packetIsValidMessage(rxPacket))
+        {
+            Xerxes::Message rxMessage = Xerxes::Message(rxPacket);
+            message(String(rxMessage.srcAddr), 0, 24, false);
+        }
+    }
 }

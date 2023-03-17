@@ -25,8 +25,8 @@
 #define BAND    868E6
 
 constexpr uint8_t _pin_tx = 13;
-constexpr uint8_t _pin_rx = 15;
-constexpr uint8_t _pin_tx_en = 2;
+constexpr uint8_t _pin_rx = 21;
+constexpr uint8_t _pin_tx_en = 12;
 
 auto xn = Xerxes::EspUart(_pin_tx, _pin_rx, _pin_tx_en);
 auto xp = Xerxes::Protocol(&xn);
@@ -45,8 +45,8 @@ void onRxInt(int packSize)
     rcvd = packSize;
 }
 
-std::vector<uint8_t> receive(int packetSize) {
-    std::string pkt;
+Xerxes::Packet receive(int packetSize) 
+{
     std::vector<uint8_t> bytes;
 
     int rssi = LoRa.packetRssi();
@@ -56,9 +56,12 @@ std::vector<uint8_t> receive(int packetSize) {
     { 
         auto next_char = LoRa.read();
         bytes.push_back((uint8_t)next_char);
-        pkt += (char)next_char;
     }
-    ESP_LOGI(TAG, "Received packet '%s'", pkt.c_str());
+
+    auto pkt = Xerxes::Packet();
+    pkt.setData(bytes);
+
+    ESP_LOGI(TAG, "Received packet");
 
     display.clear();
     display.setTextAlignment(TEXT_ALIGN_LEFT);
@@ -66,14 +69,10 @@ std::vector<uint8_t> receive(int packetSize) {
     std::stringstream ss;
     ss << "S: " << rssi << "dB";
     display.drawString(0, 0, ss.str().c_str());
-    //ss = std::stringstream();
-    //ss << "Rcvd: " << packetSize << " bytes";
-    //display.drawString(0, 12, ss.str().c_str());
-    //display.drawStringMaxWidth(0 , 24 , 128, pkt.c_str());
     display.display();
     ESP_LOGD(TAG, "RSSI %d dBm.", rssi);
 
-    return bytes;
+    return pkt;
 }
 
 
@@ -113,6 +112,35 @@ void initLora(LoRaClass &_LoRa)
     ESP_LOGD(TAG, "LoRa Receiver init done");
 }
 
+bool discoverSensor()
+{
+    for(int addr = 0; addr < 0x20; addr++)
+    {
+        try
+        {
+            ping_reply_t rply = xm.ping(addr);
+            ESP_LOGI(TAG, "Found sensor at address 0x%02X.", addr);
+            assert(rply.v_major == PROTOCOL_VERSION_MAJ && rply.v_minor == PROTOCOL_VERSION_MIN);
+            leaf = Xerxes::Leaf(addr, &xm);
+            return true;
+        }
+        catch(const Xerxes::TimeoutError& e)
+        {
+            ESP_LOGD(TAG, "No sensor found.");
+        }
+        catch(const std::exception& e)
+        {
+            ESP_LOGE(TAG, "Error: %s", e.what());
+        }
+        catch(...)
+        {
+            ESP_LOGE(TAG, "Unknown error.");
+        }
+    }
+    return false;
+}
+
+
 void setup() {
     Serial.begin(921600);
 
@@ -136,34 +164,15 @@ void setup() {
 
     ESP_LOGD(TAG, "Setting wakeups done. Searching for sensor.");
     
-    for(int addr = 0; addr < 0x20; addr++)
-    {
-        try
-        {
-            ping_reply_t rply = xm.ping(addr);
-            ESP_LOGI(TAG, "Found sensor at address 0x%02X.", addr);
-            assert(rply.v_major == PROTOCOL_VERSION_MAJ && rply.v_minor == PROTOCOL_VERSION_MIN);
-            leaf = Xerxes::Leaf(addr, &xm);
-            break;
-        }
-        catch(const Xerxes::TimeoutError& e)
-        {
-            ESP_LOGD(TAG, "No sensor found.");
-        }
-        catch(const std::exception& e)
-        {
-            ESP_LOGE(TAG, "Error: %s", e.what());
-        }
-        catch(...)
-        {
-            ESP_LOGE(TAG, "Unknown error.");
-        }
-    }
+    discoverSensor();
 }
 
 void sleep_ms(uint ms)
 {
-    esp_sleep_enable_timer_wakeup(ms * 1000);
+    auto startUs = esp_timer_get_time();
+    Serial.flush(1);
+    auto flushDuration = esp_timer_get_time() - startUs;
+    esp_sleep_enable_timer_wakeup(ms * 1000 - flushDuration);
     esp_light_sleep_start();
 }
 
@@ -179,12 +188,21 @@ void handleMessage(const Xerxes::Message & _msg)
         xp.sendMessage(_msg);
         
         Xerxes::Message replyFromSensor;
-        got_reply = xp.readMessage(replyFromSensor, 10000);
+        if(_msg.dstAddr == BROADCAST_ADDRESS)
+        {
+            ESP_LOGD(TAG, "Broadcast message. Don't wait for reply.");
+            got_reply = false;
+        }
+        else
+        {
+            ESP_LOGD(TAG, "Waiting for reply.");
+            got_reply = xp.readMessage(replyFromSensor, 10000);
+        }
         
         // mock reply
-        ESP_LOGW(TAG, "Mocking reply from sensor.");
-        got_reply = true;
-        replyFromSensor = Xerxes::Message(0, 0xFE, MSGID_PING_REPLY, std::vector<uint8_t>{1, 4, 1});
+        // ESP_LOGW(TAG, "Mocking reply from sensor.");
+        // got_reply = true;
+        // replyFromSensor = Xerxes::Message(0, 0xFE, MSGID_PING_REPLY, std::vector<uint8_t>{1, 4, 1});
 
         if(got_reply)
         {
@@ -207,17 +225,15 @@ void loop()
 {
     if(rcvd)
     {
-        auto bytes_vec = receive(rcvd);
-        auto time_start = esp_timer_get_time();
+        auto time_start = esp_timer_get_time();  
+        Xerxes::Packet rxPacket = receive(rcvd);        
 
-        auto packet = Xerxes::Packet::EmptyPacket();
-        packet.setData(bytes_vec);
-        if(packet.isValidPacket())
+        if(rxPacket.isValidPacket())
         {
-            if(packetIsValidMessage(packet))
+            if(packetIsValidMessage(rxPacket))
             {
                 ESP_LOGD(TAG, "Got valid message.");
-                handleMessage(Xerxes::Message(packet));
+                handleMessage(Xerxes::Message(rxPacket));
             }
             else
             {
@@ -226,17 +242,14 @@ void loop()
         }
         else
         {
-            ESP_LOGW(TAG, "Invalid packet received.");
+            ESP_LOGW(TAG, "Invalid packet received: %ds.", rxPacket.toString().c_str());
             rcvd = 0;
         }
         
         auto time_end = esp_timer_get_time();
         ESP_LOGW(TAG, "Message handle done. Took %lld us.", time_end - time_start);
         rcvd = 0;
-
-        // wait for Serial to send data
-        Serial.flush(1);
     }
-    sleep_ms(10);  // 1ms = 21mA, 10ms = 17mA, 100ms = 15mA
+    sleep_ms(1);  // 1ms = 21mA, 10ms = 17mA, 100ms = 15mA
     
 }

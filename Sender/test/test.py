@@ -52,21 +52,27 @@ xn.init(baudrate=921600, timeout=.1)
 
 xr = XerxesRoot(0xFE, xn)
 
-leaf = Leaf(0x00, xr)
+leaf0 = Leaf(0x00, xr)
+leaf1 = Leaf(0x01, xr)
 
 time.sleep(1)
+
+def try_read(leaf: Leaf, exc: Exception):
+    try:
+        return leaf.pv0
+    except exc:
+        log.info(f"Exception: {exc}")
+        return 0
 
 while True:
     try:
         xr.sync()
         time.sleep(.1)
         # print 3 decimals of the mean PV0
-        pv0 = f"{25*leaf.pv0:.3f}"
-        pv1 = f"{25*leaf.pv1:.3f}"
-        pv2 = f"{25*leaf.pv2:.3f}"
-        pv3 = f"{25*leaf.pv3:.3f}"
+        l0_pv0 = f"{25*try_read(leaf0, TimeoutError):.3f}"
+        l1_pv0 = f"{25*try_read(leaf1, TimeoutError):.3f}"
         # print(f"PV0: {green(pv0)}")
-        print(f"PV0: {green(pv0)} PV1: {green(pv1)} PV2: {green(pv2)} PV3: {green(pv3)}")   
+        print(f"D0: {green(l0_pv0)} D1: {green(l1_pv0)}")
         time.sleep(.9)
     except TimeoutError:
         log.info("Timeouted")

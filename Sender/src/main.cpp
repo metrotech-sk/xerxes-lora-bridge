@@ -15,11 +15,35 @@
 #include "MessageId.h"
 #include "Packet.hpp"
 
+// I2C OLED Display works with SSD1306 driver
+#ifdef OLED_SDA
+#undef OLED_SDA
+#endif
+#define OLED_SDA 21
+
+#ifdef OLED_SCL
+#undef OLED_SCL
+#endif
+#define OLED_SCL 22
+
+#ifdef OLED_RST
+#undef OLED_RST
+#endif
+#define OLED_RST 16
+
+// SPI LoRa Radio
+#define SCK 5       // GPIO5 - SX1276 SCK
+#define MISO 19     // GPIO19 - SX1276 MISO
+#define MOSI 27    // GPIO27 - SX1276 MOSI
+#define CS 18     // GPIO18 - SX1276 CS
+#define RST 23   // GPIO14 - SX1276 RST
+#define IRQ 26  // GPIO26 - SX1276 IRQ (interrupt request)
+
 
 constexpr double BAND = 868E6;
-#define PIN_LED 25
+#define PIN_LED 2
 
-SSD1306 display(0x3c, 4, 15);
+SSD1306 display(0x3c, OLED_SDA, OLED_SCL);
 
 static uint32_t ctr = 0;
 static Xerxes::Packet rxPacket;
@@ -167,13 +191,13 @@ void setup() {
     ESP_LOGD(TAG, "OLED reset");
     
     display.init();
-    // display.flipScreenVertically();  
+    display.flipScreenVertically();  
     display.setFont(ArialMT_Plain_10);
     display.drawString(0, 0, "Device started");
     ESP_LOGD(TAG, "OLED init");
     
-    SPI.begin(LORA_SCK,LORA_MISO,LORA_MOSI,LORA_CS);
-    LoRa.setPins(LORA_CS,LORA_RST,LORA_IRQ);
+    SPI.begin(SCK, MISO, MOSI, CS);
+    LoRa.setPins(CS, RST, IRQ);
 
     if (!LoRa.begin(BAND))
     {

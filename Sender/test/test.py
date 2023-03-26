@@ -46,7 +46,7 @@ class HS(DebugSerial):
         
 
 
-port = "/dev/ttyACM0"
+port = "/dev/ttyACM1"
 xn = XerxesNetwork(Serial(port))
 xn.init(baudrate=921600, timeout=.1)
 
@@ -57,12 +57,14 @@ leaf1 = Leaf(0x01, xr)
 
 time.sleep(1)
 
-def try_read(leaf: Leaf, exc: Exception):
-    try:
-        return leaf.pv0
-    except exc:
-        log.info(f"Exception: {exc}")
-        return 0
+def try_read(leaf: Leaf, exc: Exception = TimeoutError, n_retry: int = 3):
+    while(n_retry > 0):
+        try:
+            return leaf.pv0
+        except exc:
+            log.debug(f"Exception: {exc}")
+            n_retry -= 1
+    return None
 
 while True:
     try:

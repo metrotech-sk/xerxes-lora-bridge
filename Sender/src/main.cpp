@@ -44,6 +44,7 @@ constexpr double BAND = 868E6;
 #define PIN_LED 2
 
 SSD1306 display(0x3c, OLED_SDA, OLED_SCL);
+int rssi = 0;
 
 static uint32_t ctr = 0;
 static Xerxes::Packet rxPacket;
@@ -83,6 +84,8 @@ void onReceive(int packetSize)
 {
     digitalWrite(PIN_LED, HIGH);
     std::vector<uint8_t> data;
+
+    rssi = LoRa.packetRssi();
 
     while (LoRa.available()) {
         uint8_t next = LoRa.read();
@@ -191,7 +194,7 @@ void setup() {
     ESP_LOGD(TAG, "OLED reset");
     
     display.init();
-    display.flipScreenVertically();  
+     display.flipScreenVertically();  
     display.setFont(ArialMT_Plain_10);
     display.drawString(0, 0, "Device started");
     ESP_LOGD(TAG, "OLED init");
@@ -309,6 +312,7 @@ void loop() {
         {
             Xerxes::Message rxMessage = Xerxes::Message(rxPacket);
             message(String(rxMessage.srcAddr), 0, 24, false);
+            message(String("RSSI: ") + String(rssi) + String(" dBm"), 0, 36, false);
         }
     }
 }
